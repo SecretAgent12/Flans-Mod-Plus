@@ -86,50 +86,40 @@ public class FlightController {
 	{
 		PlaneType type = plane.getPlaneType();
 		//Set angles
-		float sensitivityAdjust = 0;
+		float pitchSensitivity = 0;
 		float yawSensitivity = 0;
-		float speed = (float)plane.getSpeedXYZ();
-		if(mode == EnumPlaneMode.HELI){
-			// Heli mode
-			sensitivityAdjust = (throttle > 0.5F ? 1.5F - throttle : 4F * throttle - 1F);
-			if (sensitivityAdjust < 0F)
-				sensitivityAdjust = 0F;
-			yawSensitivity = sensitivityAdjust;
-		} else {
-			
-			// Plane mode.
-			// main sensitivity.
-			if (speed < 0.5F) {
-				sensitivityAdjust = 0;
-			}  else if (speed < 1) {
-				sensitivityAdjust = (2 * speed) - 1;
-			} else if (speed < 3){
-				sensitivityAdjust = 1.5F - (speed/2);
-			} else {
-				sensitivityAdjust = 0;
-			}
+		float rollSensitivity = 0;
 
-			// If 0<speed<0.625, we'll call this taxi mode. Yaw sensitivity will work differently to main sensitivity.
-			if (plane.getSpeedXZ() < 0.7) {
-				yawSensitivity = 5 * (0.5F * speed)/(float)Math.sqrt(type.turnRightModifier);
-			} else {
-				yawSensitivity = sensitivityAdjust;
+		switch (mode) {
+			case PLANE: {
+				float xSpeed = Vector3f.dot(plane.getLocalVelocity(), plane.axes.getXAxis());
+				// Need some kind of max speed, here.
+				float controlProportion = xSpeed/type.maxThrottle;
+				FlansMod.log("XSpeed " + xSpeed);
+
+				if (plane.wheels[0] != null && plane.wheels[1] != null && plane.wheels[0].onGround && plane.wheels[1].onGround) {
+					yawSensitivity = controlProportion/4F;
+				} else {
+					yawSensitivity = controlProportion/8F;
+				}
+
+				pitchSensitivity = controlProportion/8F;
+				rollSensitivity = controlProportion/8F;
+				break;
+			}
+			case HELI: {
+				// 
+				break;
 			}
 		}
 
-		sensitivityAdjust *= 0.125F;
-		yawSensitivity *= 0.125F;
-
 		float yaw = yawControl * (yawControl > 0 ? type.turnLeftModifier : type.turnRightModifier) * yawSensitivity;
-		float pitch = pitchControl * (pitchControl > 0 ? type.lookUpModifier : type.lookDownModifier) * sensitivityAdjust;
-		float roll = rollControl * (rollControl > 0 ? type.rollLeftModifier : type.rollRightModifier) * sensitivityAdjust;
-
+		float pitch = pitchControl * (pitchControl > 0 ? type.lookUpModifier : type.lookDownModifier) * pitchSensitivity;
+		float roll = rollControl * (rollControl > 0 ? type.rollLeftModifier : type.rollRightModifier) * rollSensitivity;
 
 		//Damage modifiers
-		if(mode == EnumPlaneMode.PLANE)
-		{
-			if(!plane.isPartIntact(EnumDriveablePart.tail))
-			{
+		if(mode == EnumPlaneMode.PLANE) {
+			if(!plane.isPartIntact(EnumDriveablePart.tail)) {
 				yaw = 0;
 				pitch = 0;
 			}
@@ -137,36 +127,11 @@ public class FlightController {
 				roll -= 2F * plane.getSpeedXZ();
 			if(!plane.isPartIntact(EnumDriveablePart.rightWing))
 				roll += 2F * plane.getSpeedXZ();
-		} else if(mode == EnumPlaneMode.HELI)
-		{
-			if(!plane.isPartIntact(EnumDriveablePart.tail))
-			{
+		} else if(mode == EnumPlaneMode.HELI) {
+			if(!plane.isPartIntact(EnumDriveablePart.tail)) {
 				yaw = 10*throttle;
 			}
 		}
-		// // Correct the sitting to be "Flat" when the plane is moving slowly
-		// if (speed < 0.5) {
-		// 	if (Math.abs(plane.axes.getRoll()) > 1) {
-		// 		if (plane.axes.getRoll() < 0) {
-		// 			roll -= 0.1F;
-		// 		} else {
-		// 			roll += 0.1F;
-		// 		}
-		// 	} else {
-		// 		angularMomentum.z *= 0.9F;
-		// 	}
-
-		// 	if (Math.abs(plane.axes.getPitch()) > 1) {
-		// 		if (plane.axes.getPitch() < 0) {
-		// 			pitch -= 0.1F;
-		// 		} else {
-		// 			pitch += 0.1F;
-		// 		}
-		// 	} else {
-		// 		angularMomentum.y *= 0.9F;
-		// 	}
-
-		// }
 
 		angularMomentum.x = moveToTarget(angularMomentum.x, yaw, 1);
 		angularMomentum.y = moveToTarget(angularMomentum.y, pitch, 1);
@@ -188,24 +153,12 @@ public class FlightController {
 		for(; pitchToMove > 180F; pitchToMove -= 360F) {}
 		for(; pitchToMove <= -180F; pitchToMove += 360F) {}
 		
-		float signDeltaY = 0;
-		if(pitchToMove > speed){
-			signDeltaY = 1;
-		} else if(pitchToMove < -speed){
-			signDeltaY = -1;
-		} else {
-			signDeltaY = 0;
+		if(pitchToMove == speed)
 			return target;
-		}
 		
-		
-		if(current > target)
-		{
+		if(current > target) {
 			current = current - speed;
-		}
-		
-		else if(current < target)
-		{
+		} else if(current < target) {
 			current = current + speed;
 		}
 		
@@ -216,31 +169,22 @@ public class FlightController {
 	{
 		//Limit X
 		if(vec.x > angle)
-		{
 			vec.x = angle;
-		}
 		if(vec.x < -angle)
-		{
 			vec.x = -angle;
-		}
+
 		//Limit y
 		if(vec.y > angle)
-		{
 			vec.y = angle;
-		}
 		if(vec.y < -angle)
-		{
 			vec.y = -angle;
-		}
+
 		//Limit z
 		if(vec.z > angle)
-		{
 			vec.z = angle;
-		}
 		if(vec.z < -angle)
-		{
 			vec.z = -angle;
-		}
+
 	}
 
 	public void PlaneModeFly(EntityPlane plane)
@@ -248,9 +192,11 @@ public class FlightController {
 		PlaneType type = plane.getPlaneType();
 		DriveableData data = plane.getDriveableData();
 
-		if(plane.mode == EnumPlaneMode.HELI) return;
-		int numPropsWorking = 0;
 		int numProps = 0;
+		int numPropsWorking = 0;
+
+
+
 		float flap = angularMomentum.length();
 		drag -=flap/100;
 		throttle -= - flap/500;

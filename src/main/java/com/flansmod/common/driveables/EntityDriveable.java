@@ -434,15 +434,9 @@ public abstract class EntityDriveable extends Entity implements IControllable, I
     @Override
     public boolean attackEntityFrom(DamageSource damagesource, float i) {
         if (worldObj.isRemote || isDead) return true;
-//		if(damagesource.getDamageType().indexOf("explosion") < 0)
-        {
-            if (isMountedEntity(damagesource.getEntity())) {
-                return false;
-            }
-        }
 
-//		FlansMod.log(String.format("EntityDriveable.attackEntityFrom %.1f: %s : %s : %s", i,
-//				damagesource.getDamageType(), damagesource.getEntity(), damagesource.getSourceOfDamage()));
+        FlansMod.log(String.format("EntityDriveable.attackEntityFrom %.1f: %s : %s : %s", i,
+          damagesource.getDamageType(), damagesource.getEntity(), damagesource.getSourceOfDamage()));
 
         boolean broken = attackPart(EnumDriveablePart.core, damagesource, i);
         if (i > 0) {
@@ -1805,6 +1799,11 @@ public abstract class EntityDriveable extends Entity implements IControllable, I
         double dz = (posZ - lastTickPosZ);
         return Math.sqrt(dx * dx + dy * dy + dz * dz);
         // Blocks per tick.
+    }
+
+    public Vector3f getLocalVelocity() {
+        // Returns velocity, in the space relative to the vehicle's axis.
+        return axes.findGlobalVectorLocally(new Vector3f(motionX, motionY, motionZ));
     }
 
     /**
