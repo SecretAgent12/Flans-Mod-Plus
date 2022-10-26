@@ -113,6 +113,10 @@ BAB
 | AllowNightVision | Bool | false | Gives night vision effect when scoped |
 | ZoomLevel | Float | 1 | Zoom level of the default scope. It is NOT possible to zoom in *and* have the gun visible, due to a limitation of forge. |
 | FOVZoomLevel | Float | 1.5 | The FOV zoom level of the default scope. Keeps the gun visible (if animated properly). |
+| HasVariableZoom | Boolean | false | Is it possible to adjust the zoom. P.s. The ZoomLevel and FOVZoomLevel values will not affect the zoom. |
+| MinZoom | Float | 1.00 | Minimum zoom level. |
+| MaxZoom | Float | 4.00 | Maximum zoom level. |
+| ZoomAugment | Float | 1.00 | Zoom in/out augment. ATTENTION! The result of division (÷) MaxZoom by ZoomAugment must be an integer. (Correct example: 8/2=4. NOT correct example: 8/3=2.66...). |
 | Deployable | Bool | false | Whether the gun is placeable |
 | DeployedModel | String | ~ | The model name of the deployed model |
 | CasingModel | String | ~ | The model name of the casings to eject |
