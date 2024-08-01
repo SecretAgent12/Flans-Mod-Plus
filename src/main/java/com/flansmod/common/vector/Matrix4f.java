@@ -852,4 +852,42 @@ public class Matrix4f extends Matrix implements Serializable {
 
 		return dest;
 	}
+
+	public void readFromByteBuf(ByteBuf buf) {
+		m00 = buf.readFloat();
+		m01 = buf.readFloat();
+		m02 = buf.readFloat();
+		m03 = buf.readFloat();
+		m10 = buf.readFloat();
+		m11 = buf.readFloat();
+		m12 = buf.readFloat();
+		m13 = buf.readFloat();
+		m20 = buf.readFloat();
+		m21 = buf.readFloat();
+		m22 = buf.readFloat();
+		m23 = buf.readFloat();
+		m30 = buf.readFloat();
+		m31 = buf.readFloat();
+		m32 = buf.readFloat();
+		m33 = buf.readFloat();
+	}
+
+	public void writeToByteBuf(ByteBuf buf) {
+		buf.writeFloat(m00);
+		buf.writeFloat(m01);
+		buf.writeFloat(m02);
+		buf.writeFloat(m03);
+		buf.writeFloat(m10);
+		buf.writeFloat(m11);
+		buf.writeFloat(m12);
+		buf.writeFloat(m13);
+		buf.writeFloat(m20);
+		buf.writeFloat(m21);
+		buf.writeFloat(m22);
+		buf.writeFloat(m23);
+		buf.writeFloat(m30);
+		buf.writeFloat(m31);
+		buf.writeFloat(m32);
+		buf.writeFloat(m33);
+	}
 }
