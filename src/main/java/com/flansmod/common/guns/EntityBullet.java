@@ -13,10 +13,8 @@ import com.flansmod.common.eventhandlers.BulletHitEvent;
 import com.flansmod.common.eventhandlers.BulletLockOnEvent;
 import com.flansmod.common.guns.PenetrationLoss.PenetrationLossType;
 import com.flansmod.common.guns.raytracing.*;
-import com.flansmod.common.network.PacketFlak;
-import com.flansmod.common.network.PacketHitMarker;
-import com.flansmod.common.network.PacketManualGuidance;
-import com.flansmod.common.network.PacketPlaySound;
+import com.flansmod.common.network.*;
+import com.flansmod.common.sync.ShotData;
 import com.flansmod.common.teams.Team;
 import com.flansmod.common.teams.TeamsManager;
 import com.flansmod.common.types.InfoType;
@@ -55,7 +53,7 @@ public class EntityBullet extends EntityShootable implements IEntityAdditionalSp
     public Entity owner;
     public Vector3f ownerPos = null;
     public Vector3f ownerLook = null;
-    private int ticksInAir;
+    public int ticksInAir;
     public BulletType type;
 
     public ShootableType getType() {
@@ -137,8 +135,11 @@ public class EntityBullet extends EntityShootable implements IEntityAdditionalSp
     private EntityBullet(World world, EntityLivingBase shooter, float gunDamage, BulletType bulletType, InfoType shotFrom) {
         this(world);
         owner = shooter;
-        if (shooter instanceof EntityPlayerMP)
+        if (shooter instanceof EntityPlayerMP) {
             pingOfShooter = ((EntityPlayerMP) shooter).ping;
+            float spom = 10;
+            setPosition(posX+(motionX*spom),posY+(motionY*spom),posZ+(motionZ*spom));
+        }
         type = bulletType;
         firedFrom = shotFrom;
         damage = gunDamage;
@@ -401,7 +402,7 @@ public class EntityBullet extends EntityShootable implements IEntityAdditionalSp
             }
         }
         //Create a list for all bullet hits
-        ArrayList<BulletHit> hits = new ArrayList<>();
+
 
         Vector3f origin = new Vector3f(posX, posY, posZ);
         Vector3f motion = new Vector3f(motionX, motionY, motionZ);
@@ -418,94 +419,98 @@ public class EntityBullet extends EntityShootable implements IEntityAdditionalSp
             }
         }
 
-        //Iterate over all entities
-        for (int i = 0; i < worldObj.loadedEntityList.size(); i++) {
-            Object obj = worldObj.loadedEntityList.get(i);
-            //Get driveables
-            if (obj instanceof EntityDriveable) {
-                EntityDriveable driveable = (EntityDriveable) obj;
+        if (worldObj.isRemote && Minecraft.getMinecraft().thePlayer.equals(owner)) {
+            ArrayList<BulletHit> hits = new ArrayList<>();
 
-                if (driveable.isDead() || driveable.isPartOfThis(owner))
-                    continue;
+            //Iterate over all entities
+            for (int i = 0; i < worldObj.loadedEntityList.size(); i++) {
+                Object obj = worldObj.loadedEntityList.get(i);
+                //Get driveables
+                if (obj instanceof EntityDriveable) {
+                    EntityDriveable driveable = (EntityDriveable) obj;
 
-                //If this bullet is within the driveable's detection range
-                if (getDistanceToEntity(driveable) <= driveable.getDriveableType().bulletDetectionRadius + speed) {
-                    //Raytrace the bullet
-                    ArrayList<BulletHit> driveableHits = driveable.attackFromBullet(origin, motion);
-                    hits.addAll(driveableHits);
+                    if (driveable.isDead() || driveable.isPartOfThis(owner))
+                        continue;
+
+                    //If this bullet is within the driveable's detection range
+                    if (getDistanceToEntity(driveable) <= driveable.getDriveableType().bulletDetectionRadius + speed) {
+                        //Raytrace the bullet
+                        ArrayList<BulletHit> driveableHits = driveable.attackFromBullet(origin, motion);
+                        hits.addAll(driveableHits);
+                    }
                 }
-            }
-            //Get players
-            else if (obj instanceof EntityPlayer) {
-                EntityPlayer player = (EntityPlayer) obj;
-                PlayerData data = PlayerHandler.getPlayerData(player);
-                boolean shouldDoNormalHitDetect = false;
-                if (data != null) {
-                    if (player.isDead || data.team == Team.spectators) {
-                        continue;
-                    }
-                    if (player == owner && ticksInAir < 20)
-                        // The shooter of this bullet is immune to it for the first second.
-                        continue;
-                    int snapshotToTry = TeamsManager.bulletSnapshotMin;
-                    float snapshotPortion = pingOfShooter / (float) TeamsManager.bulletSnapshotDivisor;
+                //Get players
+                else if (obj instanceof EntityPlayer) {
+                    EntityPlayer player = (EntityPlayer) obj;
+                    PlayerData data = PlayerHandler.getPlayerData(player);
+                    boolean shouldDoNormalHitDetect = false;
+                    if (data != null) {
+                        if (player.isDead || data.team == Team.spectators) {
+                            continue;
+                        }
+                        if (player == owner && ticksInAir < 20)
+                            // The shooter of this bullet is immune to it for the first second.
+                            continue;
+                        int snapshotToTry = TeamsManager.bulletSnapshotMin;
+                        float snapshotPortion = pingOfShooter / (float) TeamsManager.bulletSnapshotDivisor;
 
-                    // Just make sure it's positive...
-                    snapshotToTry = Math.max(0, snapshotToTry);
+                        // Just make sure it's positive...
+                        snapshotToTry = Math.max(0, snapshotToTry);
 
-                    if (TeamsManager.bulletSnapshotDivisor > 0) {
-                        snapshotToTry += snapshotPortion;
-                    }
-                    if (snapshotToTry >= data.snapshots.length)
-                        snapshotToTry = data.snapshots.length - 1;
-                    PlayerSnapshot snapshot;
-                    if (data.snapshots[snapshotToTry] != null) {
-                        snapshot = data.snapshots[snapshotToTry];
-                    } else {
-                        snapshot = data.snapshots[0];
-                    }
-
-                    //DEBUG
-                    //snapshot = new PlayerSnapshot(player);
-
-                    //Check one last time for a null snapshot. If this is the case, fall back to normal hit detection
-                    if (snapshot == null)
-                        shouldDoNormalHitDetect = true;
-                    else {
-                        boolean snapshotBeforeExists = snapshotToTry != 0 && data.snapshots[snapshotToTry - 1] != null;
-                        boolean snapshotAfterExists = snapshotToTry + 1 < data.snapshots.length && data.snapshots[snapshotToTry + 1] != null;
-
-                        // -0.5 = before
-                        // 0 = centered
-                        // 0.5 = after
-                        float bias = 0.25F;
-                        float offset = snapshotPortion + bias;
-
-                        float lb = offset - 0.5F;
-                        float ub = offset + 0.5F;
-
-                        ArrayList<BulletHit> onStepHits;
-                        ArrayList<BulletHit> altStepHits = new ArrayList<>();
-
-                        if (offset > 0.5 && snapshotAfterExists) {
-                            // Timestep t and t+1
-                            onStepHits = snapshot.raytrace(origin, motion, lb, 1);
-                            if (onStepHits.isEmpty()) {
-                                altStepHits = data.snapshots[snapshotToTry + 1].raytrace(origin, motion, 0, lb);
-                            }
-                        } else if (offset < 0.5 && snapshotBeforeExists) {
-                            // Timestep t and t-1
-                            onStepHits = snapshot.raytrace(origin, motion, 0, ub);
-                            if (onStepHits.isEmpty()) {
-                                altStepHits = data.snapshots[snapshotToTry - 1].raytrace(origin, motion, ub, 1);
-                            }
+                        if (TeamsManager.bulletSnapshotDivisor > 0) {
+                            snapshotToTry += snapshotPortion;
+                        }
+                        if (snapshotToTry >= data.snapshots.length)
+                            snapshotToTry = data.snapshots.length - 1;
+                        PlayerSnapshot snapshot;
+                        if (data.snapshots[snapshotToTry] != null) {
+                            snapshot = data.snapshots[snapshotToTry];
                         } else {
-                            // Timestep t ONLY
-                            onStepHits = snapshot.raytrace(origin, motion, 0, 1);
+                            snapshot = data.snapshots[0];
                         }
 
-                        hits.addAll(onStepHits);
-                        hits.addAll(altStepHits);
+
+                        //DEBUG
+                        //snapshot = new PlayerSnapshot(player);
+
+                        //Check one last time for a null snapshot. If this is the case, fall back to normal hit detection
+                        if (snapshot == null)
+                            shouldDoNormalHitDetect = true;
+                        else {
+                            boolean snapshotBeforeExists = snapshotToTry != 0 && data.snapshots[snapshotToTry - 1] != null;
+                            boolean snapshotAfterExists = snapshotToTry + 1 < data.snapshots.length && data.snapshots[snapshotToTry + 1] != null;
+
+                            // -0.5 = before
+                            // 0 = centered
+                            // 0.5 = after
+                            float bias = 0.25F;
+                            float offset = snapshotPortion + bias;
+
+                            float lb = offset - 0.5F;
+                            float ub = offset + 0.5F;
+
+                            ArrayList<BulletHit> onStepHits;
+                            ArrayList<BulletHit> altStepHits = new ArrayList<>();
+
+                            if (offset > 0.5 && snapshotAfterExists) {
+                                // Timestep t and t+1
+                                onStepHits = snapshot.raytrace(origin, motion, lb, 1);
+                                if (onStepHits.isEmpty()) {
+                                    altStepHits = data.snapshots[snapshotToTry + 1].raytrace(origin, motion, 0, lb);
+                                }
+                            } else if (offset < 0.5 && snapshotBeforeExists) {
+                                // Timestep t and t-1
+                                onStepHits = snapshot.raytrace(origin, motion, 0, ub);
+                                if (onStepHits.isEmpty()) {
+                                    altStepHits = data.snapshots[snapshotToTry - 1].raytrace(origin, motion, ub, 1);
+                                }
+                            } else {
+                                // Timestep t ONLY
+                                onStepHits = snapshot.raytrace(origin, motion, 0, 1);
+                            }
+
+                            hits.addAll(onStepHits);
+                            hits.addAll(altStepHits);
 
 /*                        StringBuilder sb = new StringBuilder();
                         sb.append("SnapShot ").append(snapshotToTry).append(" / ").append(data.snapshots.length).append("\n");
@@ -516,380 +521,392 @@ public class EntityBullet extends EntityShootable implements IEntityAdditionalSp
                         if (onStepHits.size() + altStepHits.size() > 0) {
                             FlansMod.log(sb.toString());
                         }*/
+                        }
+                    }
+
+                    //If we couldn't get a snapshot, use normal entity hitbox calculations
+                    if (data == null || shouldDoNormalHitDetect) {
+                        MovingObjectPosition mop = player.boundingBox.expand(hitBoxSize, hitBoxSize, hitBoxSize).calculateIntercept(origin.toVec3(), Vec3.createVectorHelper(posX + motionX, posY + motionY, posZ + motionZ));
+                        if (mop != null) {
+                            Vector3f hitPoint = new Vector3f(mop.hitVec.xCoord - posX, mop.hitVec.yCoord - posY, mop.hitVec.zCoord - posZ);
+                            float hitLambda = 1F;
+                            if (motion.x != 0F)
+                                hitLambda = hitPoint.x / motion.x;
+                            else if (motion.y != 0F)
+                                hitLambda = hitPoint.y / motion.y;
+                            else if (motion.z != 0F)
+                                hitLambda = hitPoint.z / motion.z;
+                            if (hitLambda < 0)
+                                hitLambda = -hitLambda;
+
+                            hits.add(new PlayerBulletHit(new PlayerHitbox(player, new RotatedAxes(), new Vector3f(), new Vector3f(), new Vector3f(), new Vector3f(), EnumHitboxType.BODY), hitLambda));
+                        }
+                    }
+                } else {
+                    Entity entity = (Entity) obj;
+                    if (entity != owner && !entity.isDead && !(entity instanceof EntityBullet) && !(entity instanceof EntityItem) && !(entity instanceof IProjectile) &&
+                            (!entity.getClass().toString().contains("flansmod.") || entity instanceof EntityAAGun || entity instanceof EntityGrenade)
+                            && !entity.getClass().toString().contains("holographicdisplays") && !entity.getClass().toString().contains("EntityScent")
+                            && !(entity instanceof EntityLivingBase && ((EntityLivingBase) entity).getHealth() == 0.0)) {
+
+                        AxisAlignedBB bb = entity.boundingBox.addCoord(
+                                -(entity.posX - entity.prevPosX) * 2,
+                                -(entity.posY - entity.prevPosY) * 2,
+                                -(entity.posZ - entity.prevPosZ) * 2);
+
+                        MovingObjectPosition mop = bb.expand(hitBoxSize, hitBoxSize, hitBoxSize).calculateIntercept(origin.toVec3(), Vec3.createVectorHelper(posX + motionX, posY + motionY, posZ + motionZ));
+                        if (mop != null) {
+                            Vector3f hitPoint = new Vector3f(mop.hitVec.xCoord - posX, mop.hitVec.yCoord - posY, mop.hitVec.zCoord - posZ);
+                            float hitLambda = 1F;
+                            if (motion.x != 0F)
+                                hitLambda = hitPoint.x / motion.x;
+                            else if (motion.y != 0F)
+                                hitLambda = hitPoint.y / motion.y;
+                            else if (motion.z != 0F)
+                                hitLambda = hitPoint.z / motion.z;
+                            if (hitLambda < 0)
+                                hitLambda = -hitLambda;
+
+                            hits.add(new EntityHit(entity, hitLambda));
+                        }
                     }
                 }
+            }
 
-                //If we couldn't get a snapshot, use normal entity hitbox calculations
-                if (data == null || shouldDoNormalHitDetect) {
-                    MovingObjectPosition mop = player.boundingBox.expand(hitBoxSize, hitBoxSize, hitBoxSize).calculateIntercept(origin.toVec3(), Vec3.createVectorHelper(posX + motionX, posY + motionY, posZ + motionZ));
-                    if (mop != null) {
-                        Vector3f hitPoint = new Vector3f(mop.hitVec.xCoord - posX, mop.hitVec.yCoord - posY, mop.hitVec.zCoord - posZ);
-                        float hitLambda = 1F;
-                        if (motion.x != 0F)
-                            hitLambda = hitPoint.x / motion.x;
-                        else if (motion.y != 0F)
-                            hitLambda = hitPoint.y / motion.y;
-                        else if (motion.z != 0F)
-                            hitLambda = hitPoint.z / motion.z;
-                        if (hitLambda < 0)
-                            hitLambda = -hitLambda;
+            //Ray trace the bullet by comparing its next position to its current position
+            Vec3 posVec = Vec3.createVectorHelper(posX, posY, posZ);
+            Vec3 nextPosVec = Vec3.createVectorHelper(posX + motionX, posY + motionY, posZ + motionZ);
 
-                        hits.add(new PlayerBulletHit(new PlayerHitbox(player, new RotatedAxes(), new Vector3f(), new Vector3f(), new Vector3f(), new Vector3f(), EnumHitboxType.BODY), hitLambda));
-                    }
+            //Old way of finding block hit -> MovingObjectPosition hit = worldObj.func_147447_a(posVec, nextPosVec, false, true, true);
+            ArrayList<MovingObjectPosition> rayTraceHits = this.rayTraceAllBlocks(worldObj, posVec, nextPosVec, false, true, true);
+            if (rayTraceHits != null) {
+                for (MovingObjectPosition hit : rayTraceHits) {
+                    //Calculate the lambda value of the intercept
+                    posVec = Vec3.createVectorHelper(posX, posY, posZ);
+                    Vec3 hitVec = posVec.subtract(hit.hitVec);
+                    float lambda = 1;
+                    //Try each co-ordinate one at a time.
+                    if (motionX != 0)
+                        lambda = (float) (hitVec.xCoord / motionX);
+                    else if (motionY != 0)
+                        lambda = (float) (hitVec.yCoord / motionY);
+                    else if (motionZ != 0)
+                        lambda = (float) (hitVec.zCoord / motionZ);
+
+                    if (lambda < 0)
+                        lambda = -lambda;
+
+                    hits.add(new BlockHit(hit, lambda));
                 }
-            } else {
-                Entity entity = (Entity) obj;
-                if (entity != owner && !entity.isDead && !(entity instanceof EntityBullet) && !(entity instanceof EntityItem) && !(entity instanceof IProjectile) &&
-                        (!entity.getClass().toString().contains("flansmod.") || entity instanceof EntityAAGun || entity instanceof EntityGrenade)
-                        && !entity.getClass().toString().contains("holographicdisplays") && !entity.getClass().toString().contains("EntityScent")
-                        && !(entity instanceof EntityLivingBase && ((EntityLivingBase) entity).getHealth() == 0.0)) {
-
-                    AxisAlignedBB bb = entity.boundingBox.addCoord(
-                            -(entity.posX - entity.prevPosX) * 2,
-                            -(entity.posY - entity.prevPosY) * 2,
-                            -(entity.posZ - entity.prevPosZ) * 2);
-
-                    MovingObjectPosition mop = bb.expand(hitBoxSize, hitBoxSize, hitBoxSize).calculateIntercept(origin.toVec3(), Vec3.createVectorHelper(posX + motionX, posY + motionY, posZ + motionZ));
-                    if (mop != null) {
-                        Vector3f hitPoint = new Vector3f(mop.hitVec.xCoord - posX, mop.hitVec.yCoord - posY, mop.hitVec.zCoord - posZ);
-                        float hitLambda = 1F;
-                        if (motion.x != 0F)
-                            hitLambda = hitPoint.x / motion.x;
-                        else if (motion.y != 0F)
-                            hitLambda = hitPoint.y / motion.y;
-                        else if (motion.z != 0F)
-                            hitLambda = hitPoint.z / motion.z;
-                        if (hitLambda < 0)
-                            hitLambda = -hitLambda;
-
-                        hits.add(new EntityHit(entity, hitLambda));
-                    }
+            }
+            ArrayList<ShotData> shotdata = new ArrayList<>();
+            if (!hits.isEmpty()) {
+                Collections.sort(hits);
+                for (BulletHit hit : hits) {
+                    shotdata.add(new ShotData(hit, this));
+                }
+                if (!shotdata.isEmpty()) {
+                    FlansMod.getPacketHandler().sendToServer(new TEST_PacketClientHits(shotdata));
                 }
             }
         }
 
-        //Ray trace the bullet by comparing its next position to its current position
-        Vec3 posVec = Vec3.createVectorHelper(posX, posY, posZ);
-        Vec3 nextPosVec = Vec3.createVectorHelper(posX + motionX, posY + motionY, posZ + motionZ);
+        //We hit something hitreg
 
-        //Old way of finding block hit -> MovingObjectPosition hit = worldObj.func_147447_a(posVec, nextPosVec, false, true, true);
-        ArrayList<MovingObjectPosition> rayTraceHits = this.rayTraceAllBlocks(worldObj, posVec, nextPosVec, false, true, true);
-        if (rayTraceHits != null) {
-            for (MovingObjectPosition hit : rayTraceHits) {
-                //Calculate the lambda value of the intercept
-                posVec = Vec3.createVectorHelper(posX, posY, posZ);
-                Vec3 hitVec = posVec.subtract(hit.hitVec);
-                float lambda = 1;
-                //Try each co-ordinate one at a time.
-                if (motionX != 0)
-                    lambda = (float) (hitVec.xCoord / motionX);
-                else if (motionY != 0)
-                    lambda = (float) (hitVec.yCoord / motionY);
-                else if (motionZ != 0)
-                    lambda = (float) (hitVec.zCoord / motionZ);
-
-                if (lambda < 0)
-                    lambda = -lambda;
-
-                hits.add(new BlockHit(hit, lambda));
-            }
-        }
-
-        //We hit something
-        if (!hits.isEmpty()) {
-            //Sort the hits according to the intercept position
-            Collections.sort(hits);
-
-            boolean showCrosshair = false;
-            lastHitPenAmount = 0F;
-            lastHitHeadshot = false;
-
-            for (BulletHit bulletHit : hits) {
-                BulletHitEvent bulletHitEvent = new BulletHitEvent(this, bulletHit);
-                MinecraftForge.EVENT_BUS.post(bulletHitEvent);
-                if (bulletHitEvent.isCanceled()) continue;
-
-                if (bulletHit instanceof DriveableHit) {
-                    if (type.entityHitSoundEnable)
-                        PacketPlaySound.sendSoundPacket(posX, posY, posZ, type.hitSoundRange, dimension, type.hitSound, true);
-                    boolean isFriendly = false;
-                    DriveableHit driveableHit = (DriveableHit) bulletHit;
-                    driveableHit.driveable.lastAtkEntity = owner;
-                    if (TeamsManager.getInstance().currentRound != null) {
-                        for (EntitySeat seat : driveableHit.driveable.seats) {
-                            if (seat.riddenByEntity instanceof EntityPlayerMP) {
-                                PlayerData dataDriver = PlayerHandler.getPlayerData((EntityPlayerMP) seat.riddenByEntity);
-                                PlayerData dataAttacker = PlayerHandler.getPlayerData((EntityPlayerMP) owner);
-                                if (dataDriver.team.shortName.equals(dataAttacker.team.shortName)) {
-                                    isFriendly = true;
-                                }
-                            }
-                        }
-                    }
-                    if (isFriendly) {
-                        penetratingPower = 0;
-                    } else {
-                        penetratingPower = driveableHit.driveable.bulletHit(this, driveableHit, penetratingPower);
-                    }
-
-                    if (!worldObj.isRemote) {
-                        if (owner instanceof EntityPlayer) {
-                            showCrosshair = true;
-                        }
-                    }
-
-                    if (type.canSpotEntityDriveable)
-                        driveableHit.driveable.setEntityMarker(200);
-
-                    if (FlansMod.DEBUG)
-                        worldObj.spawnEntityInWorld(new EntityDebugDot(worldObj, new Vector3f(posX + motionX * driveableHit.intersectTime, posY + motionY * driveableHit.intersectTime, posZ + motionZ * driveableHit.intersectTime), 1000, 0F, 0F, 1F));
-                } else if (bulletHit instanceof PlayerBulletHit) {
-                    if (type.entityHitSoundEnable)
-                        PacketPlaySound.sendSoundPacket(posX, posY, posZ, type.hitSoundRange, dimension, type.hitSound, true);
-
-                    if (!worldObj.isRemote) {
-                        if (owner instanceof EntityPlayer) {
-                            showCrosshair = true;
-                        }
-                    }
-
-                    PlayerBulletHit playerHit = (PlayerBulletHit) bulletHit;
-                    float prevPenetratingPower = penetratingPower;
-                    penetratingPower = playerHit.hitbox.hitByBullet(this, penetratingPower);
-
-                    penetrationLosses.add(new PenetrationLoss((prevPenetratingPower - penetratingPower), PenetrationLossType.PLAYER));
-
-                    if (FlansMod.DEBUG)
-                        worldObj.spawnEntityInWorld(new EntityDebugDot(worldObj, new Vector3f(posX + motionX * playerHit.intersectTime, posY + motionY * playerHit.intersectTime, posZ + motionZ * playerHit.intersectTime), 1000, 1F, 0F, 0F));
-                } else if (bulletHit instanceof EntityHit) {
-                    if (type.entityHitSoundEnable)
-                        PacketPlaySound.sendSoundPacket(posX, posY, posZ, type.hitSoundRange, dimension, type.hitSound, true);
-
-                    if (!worldObj.isRemote) {
-                        if (owner instanceof EntityPlayer) {
-                            showCrosshair = true;
-                            lastHitPenAmount = 1F;
-                        }
-                    }
-
-                    EntityHit entityHit = (EntityHit) bulletHit;
-                    float d = getDamageAffectedByPenetration();
-
-                    if (entityHit.entity instanceof EntityLivingBase) {
-                        d *= type.damageVsLiving;
-                        if (entityHit.entity != owner)
-                            FlansMod.proxy.spawnParticle("reddust", entityHit.entity.posX, entityHit.entity.posY, entityHit.entity.posZ, 0, 0, 0);
-
-                    } else {
-                        d *= type.damageVsEntity;
-                    }
-
-                    if (entityHit.entity.attackEntityFrom(getBulletDamage(false), d) && entityHit.entity instanceof EntityLivingBase) {
-                        EntityLivingBase living = (EntityLivingBase) entityHit.entity;
-                        for (PotionEffect effect : type.hitEffects) {
-                            living.addPotionEffect(new PotionEffect(effect));
-                        }
-                        //If the attack was allowed, we should remove their immortality cooldown so we can shoot them again. Without this, any rapid fire gun become useless
-                        living.arrowHitTimer++;
-                        living.hurtResistantTime = living.maxHurtResistantTime / 2;
-                    }
-                    if (type.setEntitiesOnFire)
-                        entityHit.entity.setFire(20);
-                    penetratingPower -= 1F;
-
-                    penetrationLosses.add(new PenetrationLoss(1F, PenetrationLossType.ENTITY));
-
-                    if (FlansMod.DEBUG) {
-                        worldObj.spawnEntityInWorld(new EntityDebugDot(worldObj, new Vector3f(posX + motionX * entityHit.intersectTime, posY + motionY * entityHit.intersectTime, posZ + motionZ * entityHit.intersectTime), 1000, 1F, 1F, 0F));
-                        FlansMod.log(entityHit.entity.toString() + ": d=" + d + ": damage=" + damage + ": type.damageVsEntity=" + type.damageVsEntity);
-                    }
-                } else if (bulletHit instanceof BlockHit) {
-                    BlockHit blockHit = (BlockHit) bulletHit;
-                    MovingObjectPosition raytraceResult = blockHit.raytraceResult;
-                    Vec3 hitVec = raytraceResult.hitVec;
-
-                    //If the hit wasn't an entity hit, then it must've been a block hit
-                    int xTile = raytraceResult.blockX;
-                    int yTile = raytraceResult.blockY;
-                    int zTile = raytraceResult.blockZ;
-
-
-                    if (FlansMod.DEBUG)
-                        worldObj.spawnEntityInWorld(new EntityDebugDot(worldObj, new Vector3f(hitVec.xCoord, hitVec.yCoord, hitVec.zCoord), 1000, 0F, 1F, 0F));
-
-                    Block block = worldObj.getBlock(xTile, yTile, zTile);
-                    Material mat = block.getMaterial();
-
-                    if (FlansMod.enableBlockPenetration) {
-                        boolean penetrableBlockFound = false;
-
-                        for (PenetrableBlock penetrableBlock : FlansMod.penetrableBlocks) {
-                            if (block != penetrableBlock.getBlock()) continue;
-
-                            int metadata = penetrableBlock.getMetadata();
-                            if (metadata != -1 && metadata != worldObj.getBlockMetadata(xTile, yTile, zTile)) continue;
-
-                            float hardness = penetrableBlock.getHardness() * (type.getBlockPenetrationModifier() > 0 ? (1F / type.getBlockPenetrationModifier()) : 1F);
-
-                            penetratingPower -= hardness;
-                            if (penetratingPower < 0) break;
-
-                            FlansMod.proxy.playBlockBreakSound(xTile, yTile, zTile, block, this.dimension);
-                            if (penetrableBlock.breaks()) worldObj.setBlockToAir(xTile, yTile, zTile);
-
-                            penetrationLosses.add(new PenetrationLoss(hardness, PenetrationLossType.BLOCK));
-
-                            penetrableBlockFound = true;
-                        }
-                        //The block was penetrated, so the bullet can keep going
-                        if (penetrableBlockFound) continue;
-                    }
-
-                    if (type.hitSoundEnable)
-
-
-                    //If the bullet breaks glass, and can do so according to FlansMod, do so.
-                    if (type.breaksGlass && mat == Material.glass) {
-                        if (TeamsManager.canBreakGlass) {
-                            worldObj.setBlockToAir(xTile, yTile, zTile);
-                            FlansMod.proxy.playBlockBreakSound(xTile, yTile, zTile, block, this.dimension);
-                        }
-                    }
-                    if (type.hitSoundEnable) {
-                        String hitToUse = null;
-                        if (type.hitSound != null) {
-                            hitToUse = type.hitSound;
-                        } else if (block.equals(Blocks.brick_block)) {
-                            hitToUse = "impact_bricks";
-                            //worldObj.playSoundEffect(posX, posY, posZ, FlansModResourceHandler.getSound("impact_bricks").toString(), 0.5F, 1);
-                        } else if (mat == Material.ground || mat == Material.grass || mat == Material.sand || mat == Material.clay || mat == Material.tnt) {
-                            hitToUse = "impact_dirt";
-                            //worldObj.playSoundEffect(posX, posY, posZ, FlansModResourceHandler.getSound("impact_dirt").toString(), 0.5F, 1);
-                        } else if (mat == Material.glass || mat == Material.redstoneLight || mat == Material.ice || mat == Material.packedIce) {
-                            hitToUse = "impact_glass";
-                            //worldObj.playSoundEffect(posX, posY, posZ, FlansModResourceHandler.getSound("impact_glass").toString(), 0.5F, 1);
-                        } else if (mat == Material.iron || mat == Material.anvil) {
-                            hitToUse = "impact_metal";
-                            //worldObj.playSoundEffect(posX, posY, posZ, FlansModResourceHandler.getSound("impact_metal").toString(), 0.5F, 1);
-                        } else if (mat == Material.rock) {
-                            hitToUse = "impact_rock";
-                            //worldObj.playSoundEffect(posX, posY, posZ, FlansModResourceHandler.getSound("impact_rock").toString(), 0.5F, 1);
-                        } else if (mat == Material.wood) {
-                            hitToUse = "impact_wood";
-                            //worldObj.playSoundEffect(posX, posY, posZ, FlansModResourceHandler.getSound("impact_wood").toString(), 0.5F, 1);
-                        }
-                        PacketPlaySound.sendSoundPacket(posX, posY, posZ, type.hitSoundRange, dimension, hitToUse, true);
-                    }
-
-
-                    if (worldObj.isRemote) {
-                        if (block.getMaterial() != Material.air && this.type.explosionRadius <= 30 && type.blockHitFXScale > 0) {
-                            // Calculate the number of block particles proportionally to explosionRadius
-                            double scalingFactor = Minecraft.getMinecraft().gameSettings.fancyGraphics ? 10 : 2;
-                                    ; // Adjust this value based on your desired particle density
-                            int numBlockParticles = (int) (Math.pow((this.type.explosionRadius + 1), 1.5) * scalingFactor + 20);
-
-                            double velocityFactor = Math.sqrt(this.type.explosionRadius + 1) * type.blockHitFXScale * 0.5;
-
-                            for (int i = 0; i < numBlockParticles; i++) {
-                                // First particle
-                                FlansMod.proxy.spawnParticle(
-                                        "blockdust_" + Block.getIdFromBlock(block) + "_" + this.worldObj.getBlockMetadata(xTile, xTile, xTile),
-                                        raytraceResult.hitVec.xCoord + ((double) this.rand.nextFloat() - 0.3D) * (double) this.width * 0.05D,
-                                        raytraceResult.hitVec.yCoord + ((double) this.rand.nextFloat() - 0.3D) * (double) this.width * 0.05D,
-                                        raytraceResult.hitVec.zCoord + ((double) this.rand.nextFloat() - 0.3D) * (double) this.width * 0.05D,
-                                        -this.motionX * (0.0011D + this.rand.nextGaussian() * 0.008D) * velocityFactor, // Adjusted horizontal velocity
-                                        Math.abs(0.305D + this.rand.nextDouble() * 0.125D) * velocityFactor, // Adjusted vertical velocity
-                                        -this.motionZ * (0.0011D + this.rand.nextGaussian() * 0.008D) * velocityFactor // Adjusted horizontal velocity
-                                );
-
-                                // Second particle
-                                FlansMod.proxy.spawnParticle(
-                                        "blockcrack_" + Block.getIdFromBlock(block) + "_" + this.worldObj.getBlockMetadata(xTile, xTile, xTile),
-                                        raytraceResult.hitVec.xCoord + ((double) this.rand.nextFloat() - 0.6D) * (double) this.width * 0.75D,
-                                        raytraceResult.hitVec.yCoord + ((double) this.rand.nextFloat() - 0.6D) * (double) this.width * 0.75D,
-                                        raytraceResult.hitVec.zCoord + ((double) this.rand.nextFloat() - 0.6D) * (double) this.width * 0.75D,
-                                        -this.motionX * (0.415D + this.rand.nextGaussian() * 0.1D) * velocityFactor, // Adjusted horizontal velocity
-                                        -this.motionY * (0.425D + Math.abs(this.rand.nextGaussian() * 0.1D)) * velocityFactor, // Adjusted vertical velocity
-                                        -this.motionZ * (0.415D + this.rand.nextGaussian() * 0.1D) * velocityFactor // Adjusted horizontal velocity
-                                );
-
-                            }
-                        }
-                    }
-
-                    if (type.bounciness > 0) {
-                        Vector3f hitPos = new Vector3f(hitVec);
-                        Vector3f preHitVel = Vector3f.sub(hitPos, origin, null);
-                        Vector3f postHitVel = Vector3f.sub(motion, preHitVel, null);
-
-                        Vector3f surfaceNormal;
-
-                        int sideHit = blockHit.raytraceResult.sideHit;
-                        switch (sideHit) {
-                            case 0:
-                                surfaceNormal = new Vector3f(0, -1, 0);
-                                break;
-                            case 1:
-                                surfaceNormal = new Vector3f(0, 1, 0);
-                                break;
-                            case 2:
-                                surfaceNormal = new Vector3f(0, 0, -1);
-                                break;
-                            case 3:
-                                surfaceNormal = new Vector3f(0, 0, 1);
-                                break;
-                            case 5:
-                                surfaceNormal = new Vector3f(1, 0, 0);
-                                break;
-                            case 4:
-                            default:
-                                surfaceNormal = new Vector3f(-1, 0, 0);
-                                break;
-                        }
-
-                        if (motion.lengthSquared() < 0.1F * initialSpeed) {
-                            setPosition(hitVec.xCoord, hitVec.yCoord, hitVec.zCoord);
-                            setDead();
-                        } else {
-                            float lambda = postHitVel.length() / motion.length();
-
-                            float normalProjection = Vector3f.dot(surfaceNormal, postHitVel);
-                            Vector3f normal = (Vector3f) (new Vector3f(surfaceNormal)).scale(-normalProjection); // massively scale down the normal collision
-
-                            Vector3f orthog = Vector3f.add(postHitVel, normal, null);
-
-                            normal.scale(type.bounciness / 3);
-                            orthog.scale(type.bounciness);
-
-                            postHitVel = Vector3f.add(orthog, normal, null);
-
-                            Vector3f totalVel = Vector3f.add(preHitVel, postHitVel, null);
-
-                            setPosition(posX + totalVel.x,
-                                    posY + totalVel.y,
-                                    posZ + totalVel.z);
-                            setVelocity(postHitVel.x / lambda, postHitVel.y / lambda, postHitVel.z / lambda);
-                        }
-                    } else {
-                        setPosition(hitVec.xCoord, hitVec.yCoord, hitVec.zCoord);
-                        setDead();
-                    }
-                    break;
-                }
-                if (penetratingPower <= 0F || (type.explodeOnImpact && ticksInAir > 1)) {
-                    setPosition(posX + motionX * bulletHit.intersectTime, posY + motionY * bulletHit.intersectTime, posZ + motionZ * bulletHit.intersectTime);
-                    setDead();
-                    break;
-                }
-
-            }
-
-            if (showCrosshair && owner instanceof EntityPlayerMP) {
-                FlansMod.getPacketHandler().sendTo(new PacketHitMarker(lastHitHeadshot, lastHitPenAmount, false), (EntityPlayerMP) owner);
-            }
-
-        }
+//        if (!hits.isEmpty()) {
+//            //Sort the hits according to the intercept position
+//            Collections.sort(hits);
+//
+//            boolean showCrosshair = false;
+//            lastHitPenAmount = 0F;
+//            lastHitHeadshot = false;
+//
+//            for (BulletHit bulletHit : hits) {
+//                BulletHitEvent bulletHitEvent = new BulletHitEvent(this, bulletHit);
+//                MinecraftForge.EVENT_BUS.post(bulletHitEvent);
+//                if (bulletHitEvent.isCanceled()) continue;
+//
+//                if (bulletHit instanceof DriveableHit) {
+//                    if (type.entityHitSoundEnable)
+//                        PacketPlaySound.sendSoundPacket(posX, posY, posZ, type.hitSoundRange, dimension, type.hitSound, true);
+//                    boolean isFriendly = false;
+//                    DriveableHit driveableHit = (DriveableHit) bulletHit;
+//                    driveableHit.driveable.lastAtkEntity = owner;
+//                    if (TeamsManager.getInstance().currentRound != null) {
+//                        for (EntitySeat seat : driveableHit.driveable.seats) {
+//                            if (seat.riddenByEntity instanceof EntityPlayerMP) {
+//                                PlayerData dataDriver = PlayerHandler.getPlayerData((EntityPlayerMP) seat.riddenByEntity);
+//                                PlayerData dataAttacker = PlayerHandler.getPlayerData((EntityPlayerMP) owner);
+//                                if (dataDriver.team.shortName.equals(dataAttacker.team.shortName)) {
+//                                    isFriendly = true;
+//                                }
+//                            }
+//                        }
+//                    }
+//                    if (isFriendly) {
+//                        penetratingPower = 0;
+//                    } else {
+//                        penetratingPower = driveableHit.driveable.bulletHit(this, driveableHit, penetratingPower);
+//                    }
+//
+//                    if (!worldObj.isRemote) {
+//                        if (owner instanceof EntityPlayer) {
+//                            showCrosshair = true;
+//                        }
+//                    }
+//
+//                    if (type.canSpotEntityDriveable)
+//                        driveableHit.driveable.setEntityMarker(200);
+//
+//                    if (FlansMod.DEBUG)
+//                        worldObj.spawnEntityInWorld(new EntityDebugDot(worldObj, new Vector3f(posX + motionX * driveableHit.intersectTime, posY + motionY * driveableHit.intersectTime, posZ + motionZ * driveableHit.intersectTime), 1000, 0F, 0F, 1F));
+//                } else if (bulletHit instanceof PlayerBulletHit) {
+//                    if (type.entityHitSoundEnable)
+//                        PacketPlaySound.sendSoundPacket(posX, posY, posZ, type.hitSoundRange, dimension, type.hitSound, true);
+//
+//                    if (!worldObj.isRemote) {
+//                        if (owner instanceof EntityPlayer) {
+//                            showCrosshair = true;
+//                        }
+//                    }
+//
+//                    PlayerBulletHit playerHit = (PlayerBulletHit) bulletHit;
+//                    float prevPenetratingPower = penetratingPower;
+//                    penetratingPower = playerHit.hitbox.hitByBullet(this, penetratingPower);
+//
+//                    penetrationLosses.add(new PenetrationLoss((prevPenetratingPower - penetratingPower), PenetrationLossType.PLAYER));
+//
+//                    if (FlansMod.DEBUG)
+//                        worldObj.spawnEntityInWorld(new EntityDebugDot(worldObj, new Vector3f(posX + motionX * playerHit.intersectTime, posY + motionY * playerHit.intersectTime, posZ + motionZ * playerHit.intersectTime), 1000, 1F, 0F, 0F));
+//                } else if (bulletHit instanceof EntityHit) {
+//                    if (type.entityHitSoundEnable)
+//                        PacketPlaySound.sendSoundPacket(posX, posY, posZ, type.hitSoundRange, dimension, type.hitSound, true);
+//
+//                    if (!worldObj.isRemote) {
+//                        if (owner instanceof EntityPlayer) {
+//                            showCrosshair = true;
+//                            lastHitPenAmount = 1F;
+//                        }
+//                    }
+//
+//                    EntityHit entityHit = (EntityHit) bulletHit;
+//                    float d = getDamageAffectedByPenetration();
+//
+//                    if (entityHit.entity instanceof EntityLivingBase) {
+//                        d *= type.damageVsLiving;
+//                        if (entityHit.entity != owner)
+//                            FlansMod.proxy.spawnParticle("reddust", entityHit.entity.posX, entityHit.entity.posY, entityHit.entity.posZ, 0, 0, 0);
+//
+//                    } else {
+//                        d *= type.damageVsEntity;
+//                    }
+//
+//                    if (entityHit.entity.attackEntityFrom(getBulletDamage(false), d) && entityHit.entity instanceof EntityLivingBase) {
+//                        EntityLivingBase living = (EntityLivingBase) entityHit.entity;
+//                        for (PotionEffect effect : type.hitEffects) {
+//                            living.addPotionEffect(new PotionEffect(effect));
+//                        }
+//                        //If the attack was allowed, we should remove their immortality cooldown so we can shoot them again. Without this, any rapid fire gun become useless
+//                        living.arrowHitTimer++;
+//                        living.hurtResistantTime = living.maxHurtResistantTime / 2;
+//                    }
+//                    if (type.setEntitiesOnFire)
+//                        entityHit.entity.setFire(20);
+//                    penetratingPower -= 1F;
+//
+//                    penetrationLosses.add(new PenetrationLoss(1F, PenetrationLossType.ENTITY));
+//
+//                    if (FlansMod.DEBUG) {
+//                        worldObj.spawnEntityInWorld(new EntityDebugDot(worldObj, new Vector3f(posX + motionX * entityHit.intersectTime, posY + motionY * entityHit.intersectTime, posZ + motionZ * entityHit.intersectTime), 1000, 1F, 1F, 0F));
+//                        FlansMod.log(entityHit.entity.toString() + ": d=" + d + ": damage=" + damage + ": type.damageVsEntity=" + type.damageVsEntity);
+//                    }
+//                } else if (bulletHit instanceof BlockHit) {
+//                    BlockHit blockHit = (BlockHit) bulletHit;
+//                    MovingObjectPosition raytraceResult = blockHit.raytraceResult;
+//                    Vec3 hitVec = raytraceResult.hitVec;
+//
+//                    //If the hit wasn't an entity hit, then it must've been a block hit
+//                    int xTile = raytraceResult.blockX;
+//                    int yTile = raytraceResult.blockY;
+//                    int zTile = raytraceResult.blockZ;
+//
+//
+//                    if (FlansMod.DEBUG)
+//                        worldObj.spawnEntityInWorld(new EntityDebugDot(worldObj, new Vector3f(hitVec.xCoord, hitVec.yCoord, hitVec.zCoord), 1000, 0F, 1F, 0F));
+//
+//                    Block block = worldObj.getBlock(xTile, yTile, zTile);
+//                    Material mat = block.getMaterial();
+//
+//                    if (FlansMod.enableBlockPenetration) {
+//                        boolean penetrableBlockFound = false;
+//
+//                        for (PenetrableBlock penetrableBlock : FlansMod.penetrableBlocks) {
+//                            if (block != penetrableBlock.getBlock()) continue;
+//
+//                            int metadata = penetrableBlock.getMetadata();
+//                            if (metadata != -1 && metadata != worldObj.getBlockMetadata(xTile, yTile, zTile)) continue;
+//
+//                            float hardness = penetrableBlock.getHardness() * (type.getBlockPenetrationModifier() > 0 ? (1F / type.getBlockPenetrationModifier()) : 1F);
+//
+//                            penetratingPower -= hardness;
+//                            if (penetratingPower < 0) break;
+//
+//                            FlansMod.proxy.playBlockBreakSound(xTile, yTile, zTile, block, this.dimension);
+//                            if (penetrableBlock.breaks()) worldObj.setBlockToAir(xTile, yTile, zTile);
+//
+//                            penetrationLosses.add(new PenetrationLoss(hardness, PenetrationLossType.BLOCK));
+//
+//                            penetrableBlockFound = true;
+//                        }
+//                        //The block was penetrated, so the bullet can keep going
+//                        if (penetrableBlockFound) continue;
+//                    }
+//
+//                    if (type.hitSoundEnable)
+//
+//
+//                    //If the bullet breaks glass, and can do so according to FlansMod, do so.
+//                    if (type.breaksGlass && mat == Material.glass) {
+//                        if (TeamsManager.canBreakGlass) {
+//                            worldObj.setBlockToAir(xTile, yTile, zTile);
+//                            FlansMod.proxy.playBlockBreakSound(xTile, yTile, zTile, block, this.dimension);
+//                        }
+//                    }
+//                    if (type.hitSoundEnable) {
+//                        String hitToUse = null;
+//                        if (type.hitSound != null) {
+//                            hitToUse = type.hitSound;
+//                        } else if (block.equals(Blocks.brick_block)) {
+//                            hitToUse = "impact_bricks";
+//                            //worldObj.playSoundEffect(posX, posY, posZ, FlansModResourceHandler.getSound("impact_bricks").toString(), 0.5F, 1);
+//                        } else if (mat == Material.ground || mat == Material.grass || mat == Material.sand || mat == Material.clay || mat == Material.tnt) {
+//                            hitToUse = "impact_dirt";
+//                            //worldObj.playSoundEffect(posX, posY, posZ, FlansModResourceHandler.getSound("impact_dirt").toString(), 0.5F, 1);
+//                        } else if (mat == Material.glass || mat == Material.redstoneLight || mat == Material.ice || mat == Material.packedIce) {
+//                            hitToUse = "impact_glass";
+//                            //worldObj.playSoundEffect(posX, posY, posZ, FlansModResourceHandler.getSound("impact_glass").toString(), 0.5F, 1);
+//                        } else if (mat == Material.iron || mat == Material.anvil) {
+//                            hitToUse = "impact_metal";
+//                            //worldObj.playSoundEffect(posX, posY, posZ, FlansModResourceHandler.getSound("impact_metal").toString(), 0.5F, 1);
+//                        } else if (mat == Material.rock) {
+//                            hitToUse = "impact_rock";
+//                            //worldObj.playSoundEffect(posX, posY, posZ, FlansModResourceHandler.getSound("impact_rock").toString(), 0.5F, 1);
+//                        } else if (mat == Material.wood) {
+//                            hitToUse = "impact_wood";
+//                            //worldObj.playSoundEffect(posX, posY, posZ, FlansModResourceHandler.getSound("impact_wood").toString(), 0.5F, 1);
+//                        }
+//                        PacketPlaySound.sendSoundPacket(posX, posY, posZ, type.hitSoundRange, dimension, hitToUse, true);
+//                    }
+//
+//
+//                    if (worldObj.isRemote) {
+//                        if (block.getMaterial() != Material.air && this.type.explosionRadius <= 30 && type.blockHitFXScale > 0) {
+//                            // Calculate the number of block particles proportionally to explosionRadius
+//                            double scalingFactor = Minecraft.getMinecraft().gameSettings.fancyGraphics ? 10 : 2;
+//                                    ; // Adjust this value based on your desired particle density
+//                            int numBlockParticles = (int) (Math.pow((this.type.explosionRadius + 1), 1.5) * scalingFactor + 20);
+//
+//                            double velocityFactor = Math.sqrt(this.type.explosionRadius + 1) * type.blockHitFXScale * 0.5;
+//
+//                            for (int i = 0; i < numBlockParticles; i++) {
+//                                // First particle
+//                                FlansMod.proxy.spawnParticle(
+//                                        "blockdust_" + Block.getIdFromBlock(block) + "_" + this.worldObj.getBlockMetadata(xTile, xTile, xTile),
+//                                        raytraceResult.hitVec.xCoord + ((double) this.rand.nextFloat() - 0.3D) * (double) this.width * 0.05D,
+//                                        raytraceResult.hitVec.yCoord + ((double) this.rand.nextFloat() - 0.3D) * (double) this.width * 0.05D,
+//                                        raytraceResult.hitVec.zCoord + ((double) this.rand.nextFloat() - 0.3D) * (double) this.width * 0.05D,
+//                                        -this.motionX * (0.0011D + this.rand.nextGaussian() * 0.008D) * velocityFactor, // Adjusted horizontal velocity
+//                                        Math.abs(0.305D + this.rand.nextDouble() * 0.125D) * velocityFactor, // Adjusted vertical velocity
+//                                        -this.motionZ * (0.0011D + this.rand.nextGaussian() * 0.008D) * velocityFactor // Adjusted horizontal velocity
+//                                );
+//
+//                                // Second particle
+//                                FlansMod.proxy.spawnParticle(
+//                                        "blockcrack_" + Block.getIdFromBlock(block) + "_" + this.worldObj.getBlockMetadata(xTile, xTile, xTile),
+//                                        raytraceResult.hitVec.xCoord + ((double) this.rand.nextFloat() - 0.6D) * (double) this.width * 0.75D,
+//                                        raytraceResult.hitVec.yCoord + ((double) this.rand.nextFloat() - 0.6D) * (double) this.width * 0.75D,
+//                                        raytraceResult.hitVec.zCoord + ((double) this.rand.nextFloat() - 0.6D) * (double) this.width * 0.75D,
+//                                        -this.motionX * (0.415D + this.rand.nextGaussian() * 0.1D) * velocityFactor, // Adjusted horizontal velocity
+//                                        -this.motionY * (0.425D + Math.abs(this.rand.nextGaussian() * 0.1D)) * velocityFactor, // Adjusted vertical velocity
+//                                        -this.motionZ * (0.415D + this.rand.nextGaussian() * 0.1D) * velocityFactor // Adjusted horizontal velocity
+//                                );
+//
+//                            }
+//                        }
+//                    }
+//
+//                    if (type.bounciness > 0) {
+//                        Vector3f hitPos = new Vector3f(hitVec);
+//                        Vector3f preHitVel = Vector3f.sub(hitPos, origin, null);
+//                        Vector3f postHitVel = Vector3f.sub(motion, preHitVel, null);
+//
+//                        Vector3f surfaceNormal;
+//
+//                        int sideHit = blockHit.raytraceResult.sideHit;
+//                        switch (sideHit) {
+//                            case 0:
+//                                surfaceNormal = new Vector3f(0, -1, 0);
+//                                break;
+//                            case 1:
+//                                surfaceNormal = new Vector3f(0, 1, 0);
+//                                break;
+//                            case 2:
+//                                surfaceNormal = new Vector3f(0, 0, -1);
+//                                break;
+//                            case 3:
+//                                surfaceNormal = new Vector3f(0, 0, 1);
+//                                break;
+//                            case 5:
+//                                surfaceNormal = new Vector3f(1, 0, 0);
+//                                break;
+//                            case 4:
+//                            default:
+//                                surfaceNormal = new Vector3f(-1, 0, 0);
+//                                break;
+//                        }
+//
+//                        if (motion.lengthSquared() < 0.1F * initialSpeed) {
+//                            setPosition(hitVec.xCoord, hitVec.yCoord, hitVec.zCoord);
+//                            setDead();
+//                        } else {
+//                            float lambda = postHitVel.length() / motion.length();
+//
+//                            float normalProjection = Vector3f.dot(surfaceNormal, postHitVel);
+//                            Vector3f normal = (Vector3f) (new Vector3f(surfaceNormal)).scale(-normalProjection); // massively scale down the normal collision
+//
+//                            Vector3f orthog = Vector3f.add(postHitVel, normal, null);
+//
+//                            normal.scale(type.bounciness / 3);
+//                            orthog.scale(type.bounciness);
+//
+//                            postHitVel = Vector3f.add(orthog, normal, null);
+//
+//                            Vector3f totalVel = Vector3f.add(preHitVel, postHitVel, null);
+//
+//                            setPosition(posX + totalVel.x,
+//                                    posY + totalVel.y,
+//                                    posZ + totalVel.z);
+//                            setVelocity(postHitVel.x / lambda, postHitVel.y / lambda, postHitVel.z / lambda);
+//                        }
+//                    } else {
+//                        setPosition(hitVec.xCoord, hitVec.yCoord, hitVec.zCoord);
+//                        setDead();
+//                    }
+//                    break;
+//                }
+//                if (penetratingPower <= 0F || (type.explodeOnImpact && ticksInAir > 1)) {
+//                    setPosition(posX + motionX * bulletHit.intersectTime, posY + motionY * bulletHit.intersectTime, posZ + motionZ * bulletHit.intersectTime);
+//                    setDead();
+//                    break;
+//                }
+//
+//            }
+//
+//            if (showCrosshair && owner instanceof EntityPlayerMP) {
+//                FlansMod.getPacketHandler().sendTo(new PacketHitMarker(lastHitHeadshot, lastHitPenAmount, false), (EntityPlayerMP) owner);
+//            }
+//
+//        }
         //Otherwise, do a standard check for uninteresting entities
 		/*
 		else
@@ -1112,8 +1129,8 @@ public class EntityBullet extends EntityShootable implements IEntityAdditionalSp
         this.renderDistanceWeight = 256D;
         if (owner != null && type.manualGuidance && VLSDelay <= 0 && lockedOnTo == null) {
             if (worldObj.isRemote && owner == Minecraft.getMinecraft().thePlayer) {
-                Vector3f tempPos = new Vector3f((float)owner.posX, (float)owner.posY, (float)owner.posZ);
-                Vector3f tempLook = new Vector3f((float)owner.getLookVec().xCoord, (float)owner.getLookVec().yCoord, (float)owner.getLookVec().zCoord);
+                Vector3f tempPos = new Vector3f((float) owner.posX, (float) owner.posY, (float) owner.posZ);
+                Vector3f tempLook = new Vector3f((float) owner.getLookVec().xCoord, (float) owner.getLookVec().yCoord, (float) owner.getLookVec().zCoord);
 
                 float deltaPos = ownerPos == null ? 1000 : Vector3f.sub(tempPos, ownerPos, null).lengthSquared();
                 float deltaLook = ownerLook == null ? 1000 : Vector3f.sub(tempLook, ownerLook, null).lengthSquared();
